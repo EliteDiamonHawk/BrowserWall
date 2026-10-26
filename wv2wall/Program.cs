@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.Json;
 using Microsoft.Web.WebView2.WinForms;
 
 internal static class Program
@@ -196,10 +195,8 @@ internal sealed class WallpaperContext : ApplicationContext
     private readonly NotifyIcon _tray;
     private readonly ContextMenuStrip _menu;
     private readonly List<ToolStripMenuItem> _monitorItems = new();
-    private readonly List<ToolStripItem> _backendTrayItems = new();
     private readonly List<DeskForm> _forms = new();
     private readonly System.Windows.Forms.Timer _fullscreenTimer;
-    private static readonly HttpClient BackendHttpClient = new();
     private ToolStripMenuItem? _spanItem;
     private ToolStripMenuItem? _allItem;
     private ToolStripMenuItem? _pauseWhenFullscreenItem;
@@ -263,7 +260,6 @@ internal sealed class WallpaperContext : ApplicationContext
         BuildMenu();
         InstallHooks();
         ApplyMode();
-        _ = RefreshBackendTrayActionsAsync();
 
         _fullscreenTimer = new System.Windows.Forms.Timer { Interval = 750 };
         _fullscreenTimer.Tick += (_, _) => _ = UpdateFullscreenPauseStateAsync();
@@ -615,7 +611,6 @@ internal sealed class WallpaperContext : ApplicationContext
     {
         _menu.Items.Clear();
         _monitorItems.Clear();
-        _backendTrayItems.Clear();
 
         _menu.Items.Add(new ToolStripMenuItem("Set URL...", null, (_, _) => AskForUrl()));
         _menu.Items.Add(new ToolStripSeparator());
@@ -670,9 +665,6 @@ internal sealed class WallpaperContext : ApplicationContext
         _menu.Items.Add(_suspendWallpaperItem);
 
         _menu.Items.Add(new ToolStripMenuItem("Reload WebView2", null, (_, _) => ReloadWebViews()));
-
-        _menu.Items.Add(new ToolStripSeparator());
-        AddBackendTrayItems(Array.Empty<string>());
 
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(new ToolStripMenuItem("Exit", null, (_, _) => Exit()));
@@ -812,116 +804,6 @@ internal sealed class WallpaperContext : ApplicationContext
         return className.ToString() is "Progman" or "WorkerW";
     }
 
-    private void AddBackendTrayItems(IEnumerable<string> actionKeys)
-    {
-        foreach (var item in _backendTrayItems)
-        {
-            _menu.Items.Remove(item);
-            item.Dispose();
-        }
-
-        _backendTrayItems.Clear();
-
-        var seenActionKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (string actionKey in actionKeys)
-        {
-            if (string.IsNullOrWhiteSpace(actionKey) || !seenActionKeys.Add(actionKey))
-                continue;
-
-            var item = new ToolStripMenuItem(ToBackendTrayLabel(actionKey));
-            item.Click += (_, _) => _ = SendBackendTrayActionAsync(actionKey);
-            _backendTrayItems.Add(item);
-
-            // The dynamic section is immediately before the separator preceding Exit.
-            int exitSeparatorIndex = _menu.Items.Count - 2;
-            _menu.Items.Insert(exitSeparatorIndex, item);
-        }
-    }
-
-    private static string ToBackendTrayLabel(string actionKey)
-    {
-        string[] words = actionKey
-            .Replace('-', ' ')
-            .Replace('_', ' ')
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries);
-
-        return string.Join(' ', words.Select(word =>
-            char.ToUpperInvariant(word[0]) + word[1..]));
-    }
-
-    private async Task RefreshBackendTrayActionsAsync()
-    {
-        try
-        {
-            if (!TryGetBackendTrayUri(out Uri? trayUri))
-            {
-                AddBackendTrayItems(Array.Empty<string>());
-                return;
-            }
-
-            using HttpResponseMessage response = await BackendHttpClient.GetAsync(trayUri);
-            if (!response.IsSuccessStatusCode)
-            {
-                AddBackendTrayItems(Array.Empty<string>());
-                return;
-            }
-
-            await using Stream responseStream = await response.Content.ReadAsStreamAsync();
-            TrayActionsResponse? payload = await JsonSerializer.DeserializeAsync<TrayActionsResponse>(responseStream);
-            AddBackendTrayItems(payload?.Actions ?? Array.Empty<string>());
-        }
-        catch (HttpRequestException)
-        {
-            AddBackendTrayItems(Array.Empty<string>());
-        }
-        catch (TaskCanceledException)
-        {
-            AddBackendTrayItems(Array.Empty<string>());
-        }
-        catch (JsonException)
-        {
-            AddBackendTrayItems(Array.Empty<string>());
-        }
-    }
-
-    private async Task SendBackendTrayActionAsync(string actionKey)
-    {
-        try
-        {
-            if (!TryGetBackendTrayUri(out Uri? trayUri))
-                return;
-
-            string encodedActionKey = Uri.EscapeDataString(actionKey);
-            using var response = await BackendHttpClient.PostAsync(
-                new Uri($"{trayUri.AbsoluteUri.TrimEnd('/')}/{encodedActionKey}"),
-                content: null);
-        }
-        catch (HttpRequestException)
-        {
-        }
-        catch (TaskCanceledException)
-        {
-        }
-    }
-
-    private bool TryGetBackendTrayUri(out Uri trayUri)
-    {
-        trayUri = null!;
-        if (!Uri.TryCreate(_url, UriKind.Absolute, out Uri? backendUri) ||
-            (backendUri.Scheme != Uri.UriSchemeHttp && backendUri.Scheme != Uri.UriSchemeHttps))
-        {
-            return false;
-        }
-
-        trayUri = new Uri(backendUri.GetLeftPart(UriPartial.Authority) + "/api/tray");
-        return true;
-    }
-
-    private sealed class TrayActionsResponse
-    {
-        public string[]? Actions { get; set; }
-    }
-
     private void AskForUrl()
     {
         using var input = new InputBox("Enter URL", "Please enter the wallpaper URL:", _url);
@@ -929,7 +811,6 @@ internal sealed class WallpaperContext : ApplicationContext
         {
             _url = input.InputText;
             ApplyMode();
-            _ = RefreshBackendTrayActionsAsync();
         }
     }
 
