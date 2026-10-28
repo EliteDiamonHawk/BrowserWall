@@ -9,182 +9,26 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
 
-        string url = "http://127.0.0.1:5500";
-        string? scriptPath = null;
-        string scriptContent = "";
-        int monitor = 0;
-        WallpaperContext.WallpaperMode mode = WallpaperContext.WallpaperMode.Span;
-
-        for (int i = 0; i < args.Length; i++)
+        CommandLineParseResult result = CommandLineParser.Parse(args);
+        if (result.MessageKind != CommandLineMessageKind.None)
         {
-            switch (args[i])
-            {
-                case "--url" when i + 1 < args.Length:
-                {
-                    url = args[++i].Trim();
+            MessageBox.Show(
+                result.Message,
+                result.MessageKind == CommandLineMessageKind.Help ? "wv2wall - Help" :
+                result.MessageKind == CommandLineMessageKind.Warning ? "wv2wall - Warning" : "wv2wall - Error",
+                MessageBoxButtons.OK,
+                result.MessageKind == CommandLineMessageKind.Help ? MessageBoxIcon.Information :
+                result.MessageKind == CommandLineMessageKind.Warning ? MessageBoxIcon.Warning : MessageBoxIcon.Error);
 
-                    // Be forgiving: "excalidraw.com" -> "https://excalidraw.com"
-                    if (!url.Contains("://"))
-                        url = $"https://{url}";
-
-                    if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
-                        (uri.Scheme != Uri.UriSchemeHttp &&
-                         uri.Scheme != Uri.UriSchemeHttps))
-                    {
-                        MessageBox.Show(
-                            $"Invalid URL:\n\n{url}",
-                            "wv2wall - Error",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Error);
-
-                        return;
-                    }
-
-                    break;
-                }
-
-                case "--script" when i + 1 < args.Length:
-                {
-                    scriptPath = args[++i].Trim();
-
-                    // Expand relative paths against the current directory.
-                    scriptPath = Path.GetFullPath(scriptPath);
-
-                    if (!File.Exists(scriptPath))
-                    {
-                        MessageBox.Show(
-                            $"Script file not found:\n\n{scriptPath}",
-                            "wv2wall - Error",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Error);
-
-                        return;
-                    }
-
-                    scriptContent = File.ReadAllText(scriptPath); // Sync. because YOLO.
-                    break;
-                }
-
-                case "--script-content" when i + 1 < args.Length:
-                {
-                    scriptContent = args[++i];
-                    break;
-                }
-
-                case "--mode" when i + 1 < args.Length:
-                {
-                    string modeArg = args[++i].ToLowerInvariant();
-
-                    switch (modeArg)
-                    {
-                        case "single":
-                            mode = WallpaperContext.WallpaperMode.Single;
-                            break;
-
-                        case "all":
-                            mode = WallpaperContext.WallpaperMode.All;
-                            break;
-
-                        case "span":
-                            mode = WallpaperContext.WallpaperMode.Span;
-                            break;
-
-                        default:
-                            MessageBox.Show(
-                                $"Unknown wallpaper mode: {modeArg}\n\nExpected: single, all, or span.",
-                                "wv2wall - Error",
-                                MessageBoxButtons.OK,
-                                MessageBoxIcon.Error);
-
-                            return;
-                    }
-
-                    break;
-                }
-
-                case "--monitor" when i + 1 < args.Length:
-                {
-                    if (!int.TryParse(args[++i], out monitor) || monitor < 1)
-                    {
-                        MessageBox.Show(
-                            "Invalid monitor number.\n\nMonitor numbers start at 1.",
-                            "wv2wall - Error",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Error);
-
-                        return;
-                    }
-
-                    monitor--; // base 0
-
-                    break;
-                }
-
-                case "--help" or "-h":
-                {
-                    MessageBox.Show(
-                        """
-                        wv2wall - WebView2 desktop wallpaper
-
-                        Usage:
-                          wv2wall.exe [options]
-
-                        Options:
-
-                          --url <url>
-                              Wallpaper URL.
-                              Automatically adds https:// when no scheme is specified.
-                              Default: http://127.0.0.1:5500
-
-                          --script <path>
-                              Path to a JavaScript file to inject into the page.
-
-                          --script-content <js>
-                              JavaScript to inject directly from the command line.
-
-                          --mode <mode>
-                              Wallpaper mode:
-                                span      One wallpaper across all monitors (default)
-                                single    One monitor
-                                all       One wallpaper per monitor
-
-                          --monitor <number>
-                              Monitor to use in single mode, using 1-based numbering.
-                              Default: 1
-
-                          --help, -h
-                              Show this help message.
-
-                        Examples:
-
-                          wv2wall.exe
-                          wv2wall.exe --url https://excalidraw.com
-                          wv2wall.exe --url excalidraw.com --mode all
-                          wv2wall.exe --mode single --monitor 2
-                          wv2wall.exe --script sidebar.js
-                          wv2wall.exe --url excalidraw.com --script sidebar.js
-                        """,
-                        "wv2wall - Help",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information);
-
-                    return;
-                }
-
-                default:
-                {
-                    MessageBox.Show(
-                        $"Unknown argument:\n\n{args[i]}",
-                        "wv2wall - Warning",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Warning);
-
-                    break;
-                }
-            }
+            if (result.ShouldExit)
+                return;
         }
 
-        Application.Run(new WallpaperContext(url, scriptContent, mode, monitor));
+        Application.Run(new WallpaperContext(
+            result.Url,
+            result.ScriptContent,
+            result.Mode,
+            result.Monitor));
     }
 }
 
@@ -196,7 +40,10 @@ internal sealed class WallpaperContext : ApplicationContext
     private readonly ContextMenuStrip _menu;
     private readonly List<ToolStripMenuItem> _monitorItems = new();
     private readonly List<DeskForm> _forms = new();
-    private readonly System.Windows.Forms.Timer _fullscreenTimer;
+    private readonly Control _eventDispatcher = new();
+    private readonly System.Windows.Forms.Timer _fullscreenDebounceTimer;
+    private readonly System.Windows.Forms.Timer _fullscreenFallbackTimer;
+    private readonly List<IntPtr> _winEventHooks = new();
     private ToolStripMenuItem? _spanItem;
     private ToolStripMenuItem? _allItem;
     private ToolStripMenuItem? _pauseWhenFullscreenItem;
@@ -209,9 +56,13 @@ internal sealed class WallpaperContext : ApplicationContext
     private bool _exiting;
     private bool _pauseWhenFullscreenEnabled = true;
     private bool _manualSuspendEnabled;
-    private bool _fullscreenForeground;
-    private bool _wallpaperSuspended;
-    private bool _suspensionTransitionInProgress;
+    private bool _fullscreenMonitoringStarted;
+    private bool _fullscreenMonitoringDisposed;
+    private int _fullscreenReevaluationPosted;
+    private bool _suspensionUpdateRunning;
+    private bool _suspensionUpdatePending;
+
+    private WinEventDelegate? _winEventProc;
 
     private IntPtr _mouseHook;
     private IntPtr _keyboardHook;
@@ -241,6 +92,13 @@ internal sealed class WallpaperContext : ApplicationContext
     private const int WM_CANCELMODE = 0x001F;
     private const int WM_CLOSE = 0x0010;
 
+    private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    private const uint EVENT_SYSTEM_MOVESIZEEND = 0x000A;
+    private const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
+    private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+    private const int OBJID_WINDOW = 0;
+    private const int CHILDID_SELF = 0;
+
     public WallpaperContext(string url, string scriptContent, WallpaperMode mode, int monitor)
     {
         _url = url;
@@ -259,12 +117,25 @@ internal sealed class WallpaperContext : ApplicationContext
 
         BuildMenu();
         InstallHooks();
+
+        _eventDispatcher.CreateControl();
+        _fullscreenDebounceTimer = new System.Windows.Forms.Timer { Interval = 100 };
+        _fullscreenDebounceTimer.Tick += (_, _) =>
+        {
+            _fullscreenDebounceTimer.Stop();
+            _ = ReconcileFullscreenStateAsync();
+        };
+
+        _fullscreenFallbackTimer = new System.Windows.Forms.Timer { Interval = 7500 };
+        _fullscreenFallbackTimer.Tick += (_, _) => QueueFullscreenReevaluation();
+
         ApplyMode();
 
-        _fullscreenTimer = new System.Windows.Forms.Timer { Interval = 750 };
-        _fullscreenTimer.Tick += (_, _) => _ = UpdateFullscreenPauseStateAsync();
-        _fullscreenTimer.Start();
-        _ = UpdateFullscreenPauseStateAsync();
+        _winEventProc = WinEventCallback;
+        InstallWinEventHooks();
+        _fullscreenMonitoringStarted = true;
+        _fullscreenFallbackTimer.Start();
+        QueueFullscreenReevaluation();
     }
 
 
@@ -294,6 +165,100 @@ internal sealed class WallpaperContext : ApplicationContext
             UnhookWindowsHookEx(_keyboardHook);
             _keyboardHook = IntPtr.Zero;
         }
+    }
+
+    private void InstallWinEventHooks()
+    {
+        if (_winEventProc == null)
+            return;
+
+        uint[] events =
+        {
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_OBJECT_LOCATIONCHANGE,
+            EVENT_SYSTEM_MOVESIZEEND
+        };
+
+        foreach (uint eventId in events)
+        {
+            IntPtr hook = SetWinEventHook(
+                eventId,
+                eventId,
+                IntPtr.Zero,
+                _winEventProc,
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT);
+
+            if (hook != IntPtr.Zero)
+                _winEventHooks.Add(hook);
+        }
+    }
+
+    private void WinEventCallback(
+        IntPtr hWinEventHook,
+        uint eventType,
+        IntPtr hwnd,
+        int idObject,
+        int idChild,
+        uint eventThread,
+        uint eventTime)
+    {
+        if (_exiting || _fullscreenMonitoringDisposed)
+            return;
+
+        if (eventType == EVENT_OBJECT_LOCATIONCHANGE &&
+            (hwnd == IntPtr.Zero || idObject != OBJID_WINDOW || idChild != CHILDID_SELF))
+        {
+            return;
+        }
+
+        QueueFullscreenReevaluation();
+    }
+
+    private void QueueFullscreenReevaluation()
+    {
+        if (_exiting || _fullscreenMonitoringDisposed || !_fullscreenMonitoringStarted)
+            return;
+
+        if (Interlocked.Exchange(ref _fullscreenReevaluationPosted, 1) != 0)
+            return;
+
+        try
+        {
+            _eventDispatcher.BeginInvoke((Action)(() =>
+            {
+                Interlocked.Exchange(ref _fullscreenReevaluationPosted, 0);
+                if (_exiting || _fullscreenMonitoringDisposed)
+                    return;
+
+                _fullscreenDebounceTimer.Stop();
+                _fullscreenDebounceTimer.Start();
+            }));
+        }
+        catch (InvalidOperationException)
+        {
+            Interlocked.Exchange(ref _fullscreenReevaluationPosted, 0);
+        }
+    }
+
+    private void DisposeFullscreenMonitoring()
+    {
+        if (_fullscreenMonitoringDisposed)
+            return;
+
+        _fullscreenMonitoringDisposed = true;
+        _fullscreenMonitoringStarted = false;
+        _fullscreenDebounceTimer.Stop();
+        _fullscreenFallbackTimer.Stop();
+        _fullscreenDebounceTimer.Dispose();
+        _fullscreenFallbackTimer.Dispose();
+
+        foreach (IntPtr hook in _winEventHooks)
+            UnhookWinEvent(hook);
+
+        _winEventHooks.Clear();
+        _eventDispatcher.Dispose();
     }
 
     private IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
@@ -640,14 +605,12 @@ internal sealed class WallpaperContext : ApplicationContext
             _pauseWhenFullscreenEnabled = _pauseWhenFullscreenItem.Checked;
             if (_pauseWhenFullscreenEnabled)
             {
-                // Treat re-enabling as a fresh transition so an already-fullscreen
-                // foreground window is evaluated immediately.
-                _fullscreenForeground = false;
-                _ = UpdateFullscreenPauseStateAsync();
+                QueueFullscreenReevaluation();
             }
             else
             {
-                _ = UpdateWallpaperSuspensionAsync();
+                ClearFullscreenOcclusion();
+                RequestWallpaperSuspensionUpdate();
             }
         };
         _menu.Items.Add(_pauseWhenFullscreenItem);
@@ -660,7 +623,7 @@ internal sealed class WallpaperContext : ApplicationContext
         _suspendWallpaperItem.Click += (_, _) =>
         {
             _manualSuspendEnabled = _suspendWallpaperItem.Checked;
-            _ = UpdateWallpaperSuspensionAsync();
+            RequestWallpaperSuspensionUpdate();
         };
         _menu.Items.Add(_suspendWallpaperItem);
 
@@ -688,89 +651,99 @@ internal sealed class WallpaperContext : ApplicationContext
         }
     }
 
-    private async Task UpdateFullscreenPauseStateAsync()
+    private Task ReconcileFullscreenStateAsync()
     {
-        bool isFullscreen = IsForegroundWindowFullscreen();
-        if (isFullscreen == _fullscreenForeground)
-            return;
-
-        _fullscreenForeground = isFullscreen;
-        await UpdateWallpaperSuspensionAsync();
-    }
-
-    private Task UpdateWallpaperSuspensionAsync()
-    {
-        if (_suspensionTransitionInProgress)
+        if (_exiting || _fullscreenMonitoringDisposed)
             return Task.CompletedTask;
 
-        bool shouldSuspend = _manualSuspendEnabled ||
-            (_pauseWhenFullscreenEnabled && _fullscreenForeground);
-
-        if (shouldSuspend == _wallpaperSuspended)
+        if (!_pauseWhenFullscreenEnabled)
+        {
+            ClearFullscreenOcclusion();
+            RequestWallpaperSuspensionUpdate();
             return Task.CompletedTask;
-
-        return ApplyWallpaperSuspensionAsync(shouldSuspend);
-    }
-
-    private async Task ApplyWallpaperSuspensionAsync(bool suspend)
-    {
-        _suspensionTransitionInProgress = true;
-        try
-        {
-            if (suspend)
-            {
-                if (await SuspendWallpaperAsync())
-                    _wallpaperSuspended = true;
-            }
-            else
-            {
-                ResumeWallpaper();
-            }
         }
-        finally
-        {
-            _suspensionTransitionInProgress = false;
-        }
-    }
 
-    private async Task<bool> SuspendWallpaperAsync()
-    {
-        bool suspendedAny = false;
-        try
+        ClearFullscreenOcclusion();
+        if (TryGetFullscreenMonitor(out IntPtr fullscreenMonitor))
         {
             foreach (DeskForm form in _forms.ToArray())
             {
-                if (await form.TrySuspendAsync())
-                    suspendedAny = true;
+                if (form.MonitorHandle == fullscreenMonitor)
+                    form.FullscreenOccluded = true;
             }
         }
-        catch
-        {
-            // A WebView may be closing or still initializing. Keep the host running.
-        }
 
-        return suspendedAny;
+        RequestWallpaperSuspensionUpdate();
+        return Task.CompletedTask;
     }
 
-    private void ResumeWallpaper()
+    private void ClearFullscreenOcclusion()
     {
         foreach (DeskForm form in _forms.ToArray())
-        {
-            try
-            {
-                form.Resume();
-            }
-            catch
-            {
-                // A WebView may have been disposed during a mode switch or shutdown.
-            }
-        }
-
-        _wallpaperSuspended = false;
+            form.FullscreenOccluded = false;
     }
 
-    private bool IsForegroundWindowFullscreen()
+    private void RequestWallpaperSuspensionUpdate()
     {
+        if (_exiting)
+            return;
+
+        if (_suspensionUpdateRunning)
+        {
+            _suspensionUpdatePending = true;
+            return;
+        }
+
+        _suspensionUpdateRunning = true;
+        _ = ApplyWallpaperSuspensionAsync();
+    }
+
+    private async Task ApplyWallpaperSuspensionAsync()
+    {
+        try
+        {
+            do
+            {
+                _suspensionUpdatePending = false;
+
+                foreach (DeskForm form in _forms.ToArray())
+                {
+                    bool shouldSuspend = _manualSuspendEnabled ||
+                        (_pauseWhenFullscreenEnabled && form.FullscreenOccluded);
+
+                    if (shouldSuspend)
+                    {
+                        if (!form.RendererSuspended && await form.TrySuspendAsync())
+                            form.RendererSuspended = true;
+                    }
+                    else if (form.RendererSuspended)
+                    {
+                        try
+                        {
+                            form.Resume();
+                            form.RendererSuspended = false;
+                        }
+                        catch
+                        {
+                            // A WebView may be closing or still initializing.
+                        }
+                    }
+                }
+            }
+            while (_suspensionUpdatePending && !_exiting);
+        }
+        finally
+        {
+            _suspensionUpdateRunning = false;
+            if (_suspensionUpdatePending && !_exiting)
+                RequestWallpaperSuspensionUpdate();
+        }
+    }
+
+    private bool TryGetFullscreenMonitor(out IntPtr fullscreenMonitor)
+    {
+        fullscreenMonitor = IntPtr.Zero;
+
         IntPtr foreground = GetForegroundWindow();
         if (foreground == IntPtr.Zero || !IsWindowVisible(foreground) || IsIconic(foreground))
             return false;
@@ -784,10 +757,16 @@ internal sealed class WallpaperContext : ApplicationContext
             return false;
 
         const int tolerance = 2;
-        return windowRect.Left <= monitorInfo.Monitor.Left + tolerance &&
-               windowRect.Top <= monitorInfo.Monitor.Top + tolerance &&
-               windowRect.Right >= monitorInfo.Monitor.Right - tolerance &&
-               windowRect.Bottom >= monitorInfo.Monitor.Bottom - tolerance;
+        bool coversMonitor = windowRect.Left <= monitorInfo.Monitor.Left + tolerance &&
+            windowRect.Top <= monitorInfo.Monitor.Top + tolerance &&
+            windowRect.Right >= monitorInfo.Monitor.Right - tolerance &&
+            windowRect.Bottom >= monitorInfo.Monitor.Bottom - tolerance;
+
+        if (!coversMonitor)
+            return false;
+
+        fullscreenMonitor = monitor;
+        return true;
     }
 
     private bool IsExcludedForegroundWindow(IntPtr hWnd)
@@ -861,24 +840,44 @@ internal sealed class WallpaperContext : ApplicationContext
 
         if (mode == WallpaperMode.Span)
         {
-            _forms.Add(CreateForm(virtualBounds, virtualBounds));
+            // Span has one WebView across the virtual screen. It is intentionally
+            // not associated with an individual monitor for automatic pausing.
+            _forms.Add(CreateForm(virtualBounds, virtualBounds, IntPtr.Zero));
         }
         else if (mode == WallpaperMode.All)
         {
             foreach (var screen in screens)
             {
-                _forms.Add(CreateForm(screen.Bounds, virtualBounds));
+                _forms.Add(CreateForm(screen.Bounds, virtualBounds, GetMonitorHandle(screen.Bounds)));
             }
         }
         else
         {
-            _forms.Add(CreateForm(screens[selectedMonitor].Bounds, virtualBounds));
+            var bounds = screens[selectedMonitor].Bounds;
+            _forms.Add(CreateForm(bounds, virtualBounds, GetMonitorHandle(bounds)));
         }
+
+        RequestWallpaperSuspensionUpdate();
+        if (_fullscreenMonitoringStarted)
+            QueueFullscreenReevaluation();
     }
 
-    private DeskForm CreateForm(Rectangle targetBounds, Rectangle virtualBounds)
+    private static IntPtr GetMonitorHandle(Rectangle bounds)
     {
-        var form = new DeskForm(_url, _scriptContent, targetBounds, virtualBounds);
+        RECT rect = new()
+        {
+            Left = bounds.Left,
+            Top = bounds.Top,
+            Right = bounds.Right,
+            Bottom = bounds.Bottom
+        };
+
+        return MonitorFromRect(ref rect, MONITOR_DEFAULTTONEAREST);
+    }
+
+    private DeskForm CreateForm(Rectangle targetBounds, Rectangle virtualBounds, IntPtr monitorHandle)
+    {
+        var form = new DeskForm(_url, _scriptContent, targetBounds, virtualBounds, monitorHandle);
         form.FormClosed += OnFormClosed;
         form.Show();
         return form;
@@ -893,7 +892,7 @@ internal sealed class WallpaperContext : ApplicationContext
             if (_exiting && _forms.Count == 0)
             {
                 UninstallHooks();
-                _fullscreenTimer.Dispose();
+                DisposeFullscreenMonitoring();
                 _tray.Visible = false;
                 _tray.Dispose();
                 ExitThread();
@@ -922,8 +921,7 @@ internal sealed class WallpaperContext : ApplicationContext
     private void Exit()
     {
         _exiting = true;
-        _fullscreenTimer.Stop();
-        _fullscreenTimer.Dispose();
+        DisposeFullscreenMonitoring();
         foreach (var form in _forms.ToArray())
         {
             form.Close();
@@ -948,6 +946,16 @@ internal sealed class WallpaperContext : ApplicationContext
     private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
 
     private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate void WinEventDelegate(
+        IntPtr hWinEventHook,
+        uint eventType,
+        IntPtr hwnd,
+        int idObject,
+        int idChild,
+        uint eventThread,
+        uint eventTime);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct KBDLLHOOKSTRUCT
@@ -1045,6 +1053,20 @@ internal sealed class WallpaperContext : ApplicationContext
     private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
 
     [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetWinEventHook(
+        uint eventMin,
+        uint eventMax,
+        IntPtr hmodWinEventProc,
+        WinEventDelegate lpfnWinEventProc,
+        uint idProcess,
+        uint idThread,
+        uint flags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+    [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool UnhookWindowsHookEx(IntPtr hhk);
 
@@ -1087,6 +1109,9 @@ internal sealed class WallpaperContext : ApplicationContext
 
     [DllImport("user32.dll")]
     private static extern IntPtr MonitorFromWindow(IntPtr hWnd, uint dwFlags);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromRect(ref RECT lprc, uint dwFlags);
 
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -1136,17 +1161,28 @@ public sealed class DeskForm : Form
     private readonly string _scriptContent;
     private readonly Rectangle _targetBounds;
     private readonly Rectangle _virtualBounds;
+    internal IntPtr MonitorHandle { get; }
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal bool FullscreenOccluded { get; set; }
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal bool RendererSuspended { get; set; }
     private readonly CancellationTokenSource _initCts = new();
     private bool _initStarted;
     private bool _closing;
     private const int HR_RESOURCE_NOT_READY = unchecked((int)0x8007139F);
 
-    public DeskForm(string url, string scriptContent, Rectangle targetBounds, Rectangle virtualBounds)
+    public DeskForm(
+        string url,
+        string scriptContent,
+        Rectangle targetBounds,
+        Rectangle virtualBounds,
+        IntPtr monitorHandle)
     {
         _url = url;
         _scriptContent = scriptContent;
         _targetBounds = targetBounds;
         _virtualBounds = virtualBounds;
+        MonitorHandle = monitorHandle;
 
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;

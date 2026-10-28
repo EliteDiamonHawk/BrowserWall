@@ -1,10 +1,50 @@
-# wv2wall - modified
+# wv2wall
 
-`wv2wall` is a Windows Forms app that hosts a WebView2 surface *behind* desktop icons (attached to `WorkerW/Progman`) so a web page can act like a live wallpaper. This is a modified fork of `wv2wall`.
+`wv2wall` is a Windows Forms app that hosts a WebView2 surface behind desktop icons, allowing a web page to act as a live wallpaper.
 
-## wv2wall
+## Requirements
 
-The upstream code was made by `Superswan`. See `Superswan/README.md` file, the `upstream-wv2wall` branch, and/or the original [superswan/wv2wall](https://github.com/superswan/wv2wall) repo.
+- Windows 10/11
+- .NET 9 SDK
+- WebView2 Runtime
+
+## Build & Test
+
+From repository root:
+
+```powershell
+dotnet restore .\wv2wall\wv2wall.sln
+dotnet build .\wv2wall\wv2wall.sln -c Release
+dotnet test .\wv2wall\wv2wall.sln -c Release
+```
+
+Build output:
+
+```text
+wv2wall\bin\Release\net9.0-windows\wv2wall.exe
+```
+
+## Run
+
+Default URL is `http://127.0.0.1:5500`:
+
+```powershell
+dotnet run --project .\wv2wall\wv2wall.csproj
+```
+
+Pass app arguments after `--`:
+
+```powershell
+dotnet run --project .\wv2wall\wv2wall.csproj -- --url https://example.com
+dotnet run --project .\wv2wall\wv2wall.csproj -- --url example.com --mode all
+dotnet run --project .\wv2wall\wv2wall.csproj -- --mode single --monitor 2
+dotnet run --project .\wv2wall\wv2wall.csproj -- --script .\sidebar.js
+dotnet run --project .\wv2wall\wv2wall.csproj -- --script-content "document.body.dataset.wallpaper = 'true';"
+```
+
+Options: `--url`, `--script`, `--script-content`, `--mode span|single|all`, `--monitor <number>`, `--help`.
+
+Right-click tray icon for URL, monitor mode, reload, suspend, and fullscreen behavior.
 
 ## modifications
 
